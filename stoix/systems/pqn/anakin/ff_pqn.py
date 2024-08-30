@@ -16,12 +16,15 @@ from rich.pretty import pprint
 
 from stoix.base_types import (
     ActorApply,
+    CriticApply,
     AnakinExperimentOutput,
     LearnerFn,
     LogEnvState,
-    OffPolicyLearnerState,
+    OnPolicyLearnerState,
     OnlineQNetwork,
 )
+from stoix.networks.base import FeedForwardActor as Actor
+from stoix.networks.base import FeedForwardCritic as Critic
 
 from stoix.evaluator import evaluator_setup, get_distribution_act_fn
 from stoix.systems.pqn.pqn_types import PQNTransition
@@ -558,6 +561,7 @@ def run_experiment(_config: DictConfig) -> float:
 def hydra_entry_point(cfg: DictConfig) -> float:
     """Experiment entry point."""
     # Allow dynamic attributes.
+    print(f"{Fore.CYAN}{Style.BRIGHT}LOPOFINIBQHUBHUWBWUH {Style.RESET_ALL}")
     OmegaConf.set_struct(cfg, False)
 
     # Run experiment.

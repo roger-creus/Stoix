@@ -45,6 +45,7 @@ __MACOSX
 *.spec
 *.sif
 
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
@@ -56,6 +57,9 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.bash_history
+.config
+.nv
 nosetests.xml
 coverage.xml
 *.cover
