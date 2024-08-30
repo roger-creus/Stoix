@@ -1,3 +1,9 @@
+# Mine
+slurm_templates/*
+run_config.json
+cluster_config.json
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -37,6 +43,7 @@ __MACOSX
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+*.sif
 
 # Installer logs
 pip-log.txt

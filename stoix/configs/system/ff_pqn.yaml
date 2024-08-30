@@ -1,0 +1,15 @@
+# --- Defaults FF-PQN ---
+
+system_name: ff_pqn # Name of the system.
+
+# --- RL hyperparameters ---
+q_lr: 2.5e-4 # Learning rate for critic network
+rollout_length: 16 # Number of environment steps per vectorised environment.
+epochs: 4 # Number of ppo epochs per training data batch.
+num_minibatches: 16 # Number of minibatches per ppo epoch.
+gamma: 0.99 # Discounting factor.
+q_lambda: 0.65 # Lambda value for GAE computation.
+max_grad_norm: 10.0 # Maximum norm of the gradients for a weight update.
+decay_learning_rates: False # Whether learning rates should be linearly decayed during training.
+training_epsilon: 0.1  # epsilon for the epsilon-greedy policy during training
+evaluation_epsilon: 0.00  # epsilon for the epsilon-greedy policy during evalu

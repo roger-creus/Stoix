@@ -148,6 +148,9 @@ class OffPolicyLearnerState(NamedTuple):
     timestep: TimeStep
 
 
+class OnlineQNetwork(NamedTuple):
+    online: FrozenDict
+
 class OnlineAndTarget(NamedTuple):
     online: FrozenDict
     target: FrozenDict

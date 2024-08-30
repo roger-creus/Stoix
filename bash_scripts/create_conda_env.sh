@@ -10,7 +10,7 @@ fi
 ACCELERATOR=$1
 
 # Activate Conda
-source ~/miniconda3/etc/profile.d/conda.sh
+source ~/anaconda3/etc/profile.d/conda.sh
 
 # Create a new Conda environment
 conda create -n stx python=3.10 -y
