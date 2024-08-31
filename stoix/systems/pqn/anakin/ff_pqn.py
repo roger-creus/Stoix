@@ -35,23 +35,22 @@ from stoix.utils.jax_utils import (
     unreplicate_batch_dim,
     unreplicate_n_dims,
 )
+from stoix.utils.loss import pqn_learning
+from stoix.utils.multistep import batch_lambda_returns
 from stoix.utils.logger import LogEvent, StoixLogger
 from stoix.utils.total_timestep_checker import check_total_timesteps
 from stoix.utils.training import make_learning_rate
 from stoix.wrappers.episode_metrics import get_final_step_metrics
 
+from IPython import embed
 
 def get_learner_fn(
     env: Environment,
-    apply_fns: Tuple[ActorApply, CriticApply],
-    update_fns: Tuple[optax.TransformUpdateFn, optax.TransformUpdateFn],
+    q_apply_fn: Tuple[ActorApply, CriticApply],
+    q_update_fn: Tuple[optax.TransformUpdateFn, optax.TransformUpdateFn],
     config: DictConfig,
 ) -> LearnerFn[OnPolicyLearnerState]:
     """Get the learner function."""
-
-    # Get apply and update functions for actor and critic networks.
-    actor_apply_fn, critic_apply_fn = apply_fns
-    actor_update_fn, critic_update_fn = update_fns
 
     def _update_step(
         learner_state: OnPolicyLearnerState, _: Any
@@ -75,16 +74,15 @@ def get_learner_fn(
 
         def _env_step(
             learner_state: OnPolicyLearnerState, _: Any
-        ) -> Tuple[OnPolicyLearnerState, PPOTransition]:
+        ) -> Tuple[OnPolicyLearnerState, PQNTransition]:
             """Step the environment."""
-            params, opt_states, key, env_state, last_timestep = learner_state
+            q_params, opt_states, key, env_state, last_timestep = learner_state
 
             # SELECT ACTION
             key, policy_key = jax.random.split(key)
-            actor_policy = actor_apply_fn(params.actor_params, last_timestep.observation)
-            value = critic_apply_fn(params.critic_params, last_timestep.observation)
+            actor_policy = q_apply_fn(q_params.online, last_timestep.observation)
             action = actor_policy.sample(seed=policy_key)
-            log_prob = actor_policy.log_prob(action)
+            max_q_value = actor_policy.preferences.max(-1)
 
             # STEP ENVIRONMENT
             env_state, timestep = jax.vmap(env.step, in_axes=(0, 0))(env_state, action)
@@ -94,17 +92,16 @@ def get_learner_fn(
             truncated = (timestep.last() & (timestep.discount != 0.0)).reshape(-1)
             info = timestep.extras["episode_metrics"]
 
-            transition = PPOTransition(
+            transition = PQNTransition(
                 done,
                 truncated,
                 action,
-                value,
+                max_q_value,
                 timestep.reward,
-                log_prob,
                 last_timestep.observation,
                 info,
             )
-            learner_state = OnPolicyLearnerState(params, opt_states, key, env_state, timestep)
+            learner_state = OnPolicyLearnerState(q_params, opt_states, key, env_state, timestep)
             return learner_state, transition
 
         # STEP ENVIRONMENT FOR ROLLOUT LENGTH
@@ -112,22 +109,25 @@ def get_learner_fn(
             _env_step, learner_state, None, config.system.rollout_length
         )
 
-        # CALCULATE ADVANTAGE
-        params, opt_states, key, env_state, last_timestep = learner_state
-        last_val = critic_apply_fn(params.critic_params, last_timestep.observation)
+        # CALCULATE Q(lambda) TARGETS
+        q_params, opt_states, key, env_state, last_timestep = learner_state
+
+        # TODO: is this really not necessary?
+        #last_val = q_apply_fn(q_params.online, last_timestep.observation).preferences.max(-1)
+        #v_t = jnp.concatenate([traj_batch.value, last_val[None, ...]], axis=0)
 
         r_t = traj_batch.reward
-        v_t = jnp.concatenate([traj_batch.value, last_val[None, ...]], axis=0)
+        v_t = traj_batch.value
         d_t = 1.0 - traj_batch.done.astype(jnp.float32)
         d_t = (d_t * config.system.gamma).astype(jnp.float32)
-        advantages, targets = batch_truncated_generalized_advantage_estimation(
+        
+        targets = batch_lambda_returns(
             r_t,
             d_t,
-            config.system.gae_lambda,
             v_t,
+            config.system.q_lambda,
+            stop_target_gradients=True, # TODO: this should be true right?
             time_major=True,
-            standardize_advantages=config.system.standardize_advantages,
-            truncation_flags=traj_batch.truncated,
         )
 
         def _update_epoch(update_state: Tuple, _: Any) -> Tuple:
@@ -137,114 +137,66 @@ def get_learner_fn(
                 """Update the network for a single minibatch."""
 
                 # UNPACK TRAIN STATE AND BATCH INFO
-                params, opt_states = train_state
-                traj_batch, advantages, targets = batch_info
+                q_params, opt_states = train_state
+                traj_batch, targets = batch_info
 
-                def _actor_loss_fn(
-                    actor_params: FrozenDict,
-                    traj_batch: PPOTransition,
-                    gae: chex.Array,
-                ) -> Tuple:
-                    """Calculate the actor loss."""
-                    # RERUN NETWORK
-                    actor_policy = actor_apply_fn(actor_params, traj_batch.obs)
-                    log_prob = actor_policy.log_prob(traj_batch.action)
-
-                    # CALCULATE ACTOR LOSS
-                    loss_actor = ppo_clip_loss(
-                        log_prob, traj_batch.log_prob, gae, config.system.clip_eps
-                    )
-                    entropy = actor_policy.entropy().mean()
-
-                    total_loss_actor = loss_actor - config.system.ent_coef * entropy
-                    loss_info = {
-                        "actor_loss": loss_actor,
-                        "entropy": entropy,
-                    }
-                    return total_loss_actor, loss_info
-
-                def _critic_loss_fn(
-                    critic_params: FrozenDict,
-                    traj_batch: PPOTransition,
+                def _q_loss_fn(
+                    q_params: FrozenDict,
+                    traj_batch: PQNTransition,
                     targets: chex.Array,
                 ) -> Tuple:
                     """Calculate the critic loss."""
                     # RERUN NETWORK
-                    value = critic_apply_fn(critic_params, traj_batch.obs)
+                    
+                    value = q_apply_fn(q_params, traj_batch.obs).preferences
 
-                    # CALCULATE VALUE LOSS
-                    value_loss = clipped_value_loss(
-                        value, traj_batch.value, targets, config.system.clip_eps
+                    value_loss = pqn_learning(
+                        value, targets, traj_batch.action, huber_loss_parameter=0.0
                     )
 
-                    critic_total_loss = config.system.vf_coef * value_loss
                     loss_info = {
                         "value_loss": value_loss,
                     }
-                    return critic_total_loss, loss_info
-
-                # CALCULATE ACTOR LOSS
-                actor_grad_fn = jax.grad(_actor_loss_fn, has_aux=True)
-                actor_grads, actor_loss_info = actor_grad_fn(
-                    params.actor_params, traj_batch, advantages
-                )
+                    return value_loss, loss_info
 
                 # CALCULATE CRITIC LOSS
-                critic_grad_fn = jax.grad(_critic_loss_fn, has_aux=True)
-                critic_grads, critic_loss_info = critic_grad_fn(
-                    params.critic_params, traj_batch, targets
+                q_grad_fn = jax.grad(_q_loss_fn, has_aux=True)
+                q_grads, loss_info = q_grad_fn(
+                    q_params.online, traj_batch, targets
                 )
 
                 # Compute the parallel mean (pmean) over the batch.
                 # This calculation is inspired by the Anakin architecture demo notebook.
                 # available at https://tinyurl.com/26tdzs5x
                 # This pmean could be a regular mean as the batch axis is on the same device.
-                actor_grads, actor_loss_info = jax.lax.pmean(
-                    (actor_grads, actor_loss_info), axis_name="batch"
+                q_grads, loss_info = jax.lax.pmean(
+                    (q_grads, loss_info), axis_name="batch"
                 )
                 # pmean over devices.
-                actor_grads, actor_loss_info = jax.lax.pmean(
-                    (actor_grads, actor_loss_info), axis_name="device"
+                q_grads, loss_info = jax.lax.pmean(
+                    (q_grads, loss_info), axis_name="device"
                 )
-
-                critic_grads, critic_loss_info = jax.lax.pmean(
-                    (critic_grads, critic_loss_info), axis_name="batch"
-                )
-                # pmean over devices.
-                critic_grads, critic_loss_info = jax.lax.pmean(
-                    (critic_grads, critic_loss_info), axis_name="device"
-                )
-
-                # UPDATE ACTOR PARAMS AND OPTIMISER STATE
-                actor_updates, actor_new_opt_state = actor_update_fn(
-                    actor_grads, opt_states.actor_opt_state
-                )
-                actor_new_params = optax.apply_updates(params.actor_params, actor_updates)
 
                 # UPDATE CRITIC PARAMS AND OPTIMISER STATE
-                critic_updates, critic_new_opt_state = critic_update_fn(
-                    critic_grads, opt_states.critic_opt_state
+                q_updates, q_new_opt_state = q_update_fn(
+                    q_grads, opt_states
                 )
-                critic_new_params = optax.apply_updates(params.critic_params, critic_updates)
+                
+                q_new_params = optax.apply_updates(q_params.online, q_updates)
 
                 # PACK NEW PARAMS AND OPTIMISER STATE
-                new_params = ActorCriticParams(actor_new_params, critic_new_params)
-                new_opt_state = ActorCriticOptStates(actor_new_opt_state, critic_new_opt_state)
+                new_params = OnlineQNetwork(q_new_params)
+                new_opt_state = q_new_opt_state
 
-                # PACK LOSS INFO
-                loss_info = {
-                    **actor_loss_info,
-                    **critic_loss_info,
-                }
                 return (new_params, new_opt_state), loss_info
 
-            params, opt_states, traj_batch, advantages, targets, key = update_state
+            q_params, opt_states, traj_batch, targets, key = update_state
             key, shuffle_key = jax.random.split(key)
 
             # SHUFFLE MINIBATCHES
             batch_size = config.system.rollout_length * config.arch.num_envs
             permutation = jax.random.permutation(shuffle_key, batch_size)
-            batch = (traj_batch, advantages, targets)
+            batch = (traj_batch, targets)
             batch = jax.tree_util.tree_map(lambda x: merge_leading_dims(x, 2), batch)
             shuffled_batch = jax.tree_util.tree_map(
                 lambda x: jnp.take(x, permutation, axis=0), batch
@@ -255,22 +207,22 @@ def get_learner_fn(
             )
 
             # UPDATE MINIBATCHES
-            (params, opt_states), loss_info = jax.lax.scan(
-                _update_minibatch, (params, opt_states), minibatches
+            (q_params, opt_states), loss_info = jax.lax.scan(
+                _update_minibatch, (q_params, opt_states), minibatches
             )
 
-            update_state = (params, opt_states, traj_batch, advantages, targets, key)
+            update_state = (q_params, opt_states, traj_batch, targets, key)
             return update_state, loss_info
 
-        update_state = (params, opt_states, traj_batch, advantages, targets, key)
+        update_state = (q_params, opt_states, traj_batch, targets, key)
 
         # UPDATE EPOCHS
         update_state, loss_info = jax.lax.scan(
             _update_epoch, update_state, None, config.system.epochs
         )
 
-        params, opt_states, traj_batch, advantages, targets, key = update_state
-        learner_state = OnPolicyLearnerState(params, opt_states, key, env_state, last_timestep)
+        q_params, opt_states, traj_batch, targets, key = update_state
+        learner_state = OnPolicyLearnerState(q_params, opt_states, key, env_state, last_timestep)
         metric = traj_batch.info
         return learner_state, (metric, loss_info)
 
@@ -386,7 +338,7 @@ def learner_setup(
             **config.logger.checkpointing.load_args,  # Other checkpoint args
         )
         # Restore the learner state from the checkpoint
-        restored_params, _ = loaded_checkpoint.restore_params()
+        restored_params, _ = loaded_checkpoint.restore_params(OnlineQNetwork)
         # Update the params
         params = restored_params
 
@@ -561,7 +513,6 @@ def run_experiment(_config: DictConfig) -> float:
 def hydra_entry_point(cfg: DictConfig) -> float:
     """Experiment entry point."""
     # Allow dynamic attributes.
-    print(f"{Fore.CYAN}{Style.BRIGHT}LOPOFINIBQHUBHUWBWUH {Style.RESET_ALL}")
     OmegaConf.set_struct(cfg, False)
 
     # Run experiment.
