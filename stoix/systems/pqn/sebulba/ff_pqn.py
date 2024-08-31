@@ -26,7 +26,7 @@ from stoix.base_types import (
 from stoix.evaluator import evaluator_setup, get_distribution_act_fn
 from stoix.networks.base import FeedForwardActor as Actor
 from stoix.networks.base import FeedForwardCritic as Critic
-from stoix.systems.ppo.ppo_types import PPOTransition
+from stoix.systems.pqn.pqn_types import PQNTransition
 from stoix.utils import make_env as environments
 from stoix.utils.checkpointing import Checkpointer
 from stoix.utils.jax_utils import (
@@ -76,7 +76,7 @@ def get_learner_fn(
 
         def _env_step(
             learner_state: OnPolicyLearnerState, _: Any
-        ) -> Tuple[OnPolicyLearnerState, PPOTransition]:
+        ) -> Tuple[OnPolicyLearnerState, PQNTransition]:
             """Step the environment."""
             params, opt_states, key, env_state, last_timestep = learner_state
 
@@ -95,7 +95,7 @@ def get_learner_fn(
             truncated = (timestep.last() & (timestep.discount != 0.0)).reshape(-1)
             info = timestep.extras["episode_metrics"]
 
-            transition = PPOTransition(
+            transition = PQNTransition(
                 done,
                 truncated,
                 action,
@@ -143,7 +143,7 @@ def get_learner_fn(
 
                 def _actor_loss_fn(
                     actor_params: FrozenDict,
-                    traj_batch: PPOTransition,
+                    traj_batch: PQNTransition,
                     gae: chex.Array,
                 ) -> Tuple:
                     """Calculate the actor loss."""
@@ -166,7 +166,7 @@ def get_learner_fn(
 
                 def _critic_loss_fn(
                     critic_params: FrozenDict,
-                    traj_batch: PPOTransition,
+                    traj_batch: PQNTransition,
                     targets: chex.Array,
                 ) -> Tuple:
                     """Calculate the critic loss."""
@@ -565,7 +565,7 @@ def run_experiment(_config: DictConfig) -> float:
 
 @hydra.main(
     config_path="../../../configs/default/anakin",
-    config_name="default_ff_ppo.yaml",
+    config_name="default_ff_pqn.yaml",
     version_base="1.2",
 )
 def hydra_entry_point(cfg: DictConfig) -> float:
@@ -576,7 +576,7 @@ def hydra_entry_point(cfg: DictConfig) -> float:
     # Run experiment.
     eval_performance = run_experiment(cfg)
 
-    print(f"{Fore.CYAN}{Style.BRIGHT}PPO experiment completed{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}{Style.BRIGHT}pqn experiment completed{Style.RESET_ALL}")
     return eval_performance
 
 
