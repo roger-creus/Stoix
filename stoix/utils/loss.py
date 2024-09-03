@@ -102,6 +102,23 @@ def categorical_double_q_learning(
 
     return td_error
 
+def pqn_learning(
+    pred_value_t: chex.Array,
+    target_t: chex.Array,
+    action_t: chex.Array,
+    huber_loss_parameter: chex.Array,
+) -> jnp.ndarray:
+    """Computes PQN loss between predicted values and target values. Each input is a batch."""
+    batch_indices = jnp.arange(action_t.shape[0])
+    
+    td_error = pred_value_t[batch_indices, action_t] - target_t
+    
+    if huber_loss_parameter > 0.0:
+        batch_loss = rlax.huber_loss(td_error, huber_loss_parameter)
+    else:
+        batch_loss = rlax.l2_loss(td_error)
+
+    return jnp.mean(batch_loss)
 
 def q_learning(
     q_tm1: chex.Array,

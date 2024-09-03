@@ -1,0 +1,13 @@
+# ---CNN Networks---
+actor_network:
+  pre_torso:
+    _target_: stoix.networks.torso.CNNTorso
+    channel_sizes: [16]
+    kernel_sizes: [3]
+    strides: [1]
+    use_layer_norm: False
+    activation: silu
+    channel_first: True
+    mlp_hidden_sizes: [128]
+  action_head:
+    _target_: stoix.networks.heads.DiscreteQNetworkHead

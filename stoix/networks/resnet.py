@@ -147,9 +147,12 @@ class VisualResNetTorso(nn.Module):
 
         output = output.reshape(*observation.shape[:-3], -1)
         for num_hidden_units in self.hidden_sizes:
-            output = nn.Dense(features=num_hidden_units)(output)
+            output = nn.Dense(features=num_hidden_units)(
+                output
+            )
+            if self.use_layer_norm:
+                output = nn.LayerNorm(use_scale=False)(output)
             output = parse_activation_fn(self.activation)(output)
-
         return output
 
 
