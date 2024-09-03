@@ -7,5 +7,6 @@ actor_network:
     use_layer_norm: False
     activation: silu
     channel_first: True
+    hidden_sizes: [512]
   action_head:
     _target_: stoix.networks.heads.DiscreteQNetworkHead

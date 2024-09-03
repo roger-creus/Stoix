@@ -398,6 +398,8 @@ def make(config: DictConfig) -> Tuple[Environment, Environment]:
     """
     env_name = config.env.scenario.name
 
+    print(f"Creating environment {env_name} with config {config.env}")
+
     if env_name in gymnax_environments:
         envs = make_gymnax_env(env_name, config)
     elif env_name in JUMANJI_REGISTRY:

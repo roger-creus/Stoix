@@ -87,16 +87,6 @@ class CNNTorso(nn.Module):
                 x = nn.LayerNorm(reduction_axes=(-3, -2, -1))(x)
             x = parse_activation_fn(self.activation)(x)
             
-        # Flatten the output
-        x = x.reshape(*observation.shape[:-3], -1)
-        
-        # Apply MLP layers if any
-        for layer_size in self.mlp_hidden_sizes:
-            x = nn.Dense(layer_size, kernel_init=self.kernel_init)(x)
-            if self.use_layer_norm:
-                x = nn.LayerNorm(use_scale=False)(x)
-            x = parse_activation_fn(self.activation)(x)
-
         # Flatten
         x = x.reshape(*observation.shape[:-3], -1)
 
